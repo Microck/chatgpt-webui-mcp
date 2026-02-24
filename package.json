@@ -1,6 +1,6 @@
 {
   "name": "chatgpt-webui-mcp",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "description": "Standalone MCP server for ChatGPT Web UI via session token",
   "type": "module",
   "main": "dist/index.js",

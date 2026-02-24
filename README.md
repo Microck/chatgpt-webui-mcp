@@ -7,6 +7,10 @@
 </p>
 
 <p align="">
+  <img src="assets/icon.png" alt="chatgpt-webui-mcp icon" width="96" height="96">
+</p>
+
+<p align="">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/language-typescript-blue" alt="language">
   <img src="https://img.shields.io/badge/mcp-sdk-orange" alt="mcp">
@@ -83,6 +87,7 @@ because this server uses `stdio` or `sse`, you configure it as a local command (
 
 legacy `CHATGPT_CAMOFOX_*` env vars are still supported for compatibility.
 `CHATGPT_TRANSPORT=httpcloak` is optional fallback mode for advanced/debug scenarios.
+when model/thinking are omitted, requests default to `gpt-5-2` (auto), not pro.
 
 ---
 

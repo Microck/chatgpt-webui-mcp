@@ -455,10 +455,22 @@ function escapeRegExp(value: string): string {
 }
 
 function snapshotIndicatesGenerationInProgress(snapshot: string): boolean {
-  return (
-    /button\s+"(?:Stop|Cancel)\b/i.test(snapshot) ||
-    /\b(Researching|Gathering sources|Working on your report|Thinking|Analyzing|Generating)\b/i.test(snapshot)
-  );
+  return /button\s+"(?:Stop|Cancel)\b/i.test(snapshot);
+}
+
+function visitedUrlsContainImageCandidate(urls: string[]): boolean {
+  return urls.some((url) => {
+    const normalized = url.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    return (
+      /\.(png|jpe?g|webp|gif)(?:[?#]|$)/i.test(normalized) ||
+      /(oaiusercontent|openaiusercontent|oaidalle|blob\.core\.windows\.net)/i.test(normalized) ||
+      /\/backend-api\/(files|asset)\//i.test(normalized)
+    );
+  });
 }
 
 function snapshotIndicatesReadyForNextPrompt(snapshot: string): boolean {
@@ -1426,6 +1438,68 @@ export class ChatgptWebuiClient {
     throw new Error("camofox_assistant_response_timeout");
   }
 
+  async #camofoxWaitForImageGenerationToSettle(
+    tabId: string,
+    timeoutMs: number,
+  ): Promise<{ conversationId: string | null; sawImageCandidate: boolean }> {
+    const startedAt = Date.now();
+    let lastConversationId: string | null = null;
+    let idleTicks = 0;
+    let sawImageCandidate = false;
+    const minimumSettleMs = 6000;
+
+    while (Date.now() - startedAt < timeoutMs) {
+      await this.#camofoxTryWait(tabId, 5000, false);
+      const snapshot = await this.#camofoxSnapshot(tabId);
+      const snapshotText = String(snapshot.snapshot ?? "");
+
+      const conversationId = parseConversationIdFromUrl(snapshot.url);
+      if (conversationId) {
+        lastConversationId = conversationId;
+      }
+
+      let visitedUrls: string[] = [];
+      try {
+        visitedUrls = await this.#camofoxGetVisitedUrls(tabId);
+      } catch {
+        visitedUrls = [];
+      }
+
+      if (visitedUrlsContainImageCandidate(visitedUrls)) {
+        sawImageCandidate = true;
+      }
+
+      const stillGenerating = snapshotIndicatesGenerationInProgress(snapshotText);
+
+      if (stillGenerating) {
+        idleTicks = 0;
+      } else {
+        idleTicks += 1;
+      }
+
+      if (
+        sawImageCandidate &&
+        !stillGenerating &&
+        Date.now() - startedAt >= minimumSettleMs &&
+        (snapshotIndicatesReadyForNextPrompt(snapshotText) || idleTicks >= 2)
+      ) {
+        return { conversationId: lastConversationId, sawImageCandidate };
+      }
+
+      if (
+        !stillGenerating &&
+        Date.now() - startedAt >= minimumSettleMs &&
+        (snapshotIndicatesReadyForNextPrompt(snapshotText) || idleTicks >= 3)
+      ) {
+        return { conversationId: lastConversationId, sawImageCandidate };
+      }
+
+      await sleep(1500);
+    }
+
+    return { conversationId: lastConversationId, sawImageCandidate };
+  }
+
   #conversationUrl(conversationId?: string): string {
     const id = String(conversationId ?? "").trim();
     if (!id) {
@@ -1484,9 +1558,16 @@ export class ChatgptWebuiClient {
       await this.#camofoxTypeWithFallback(tabId, input.prompt);
       await this.#camofoxSubmitPrompt(tabId);
 
-      const polled = await this.#camofoxPollAssistantText(tabId, input.prompt, effectiveTimeout, {
-        allowEmptyResult: wantsImageGeneration,
-      });
+      let polledText = "";
+      let polledConversationId: string | null = null;
+      if (wantsImageGeneration) {
+        const settled = await this.#camofoxWaitForImageGenerationToSettle(tabId, effectiveTimeout);
+        polledConversationId = settled.conversationId;
+      } else {
+        const polled = await this.#camofoxPollAssistantText(tabId, input.prompt, effectiveTimeout);
+        polledText = polled.text;
+        polledConversationId = polled.conversationId;
+      }
       let imageUrls: string[] | undefined;
       let imageDataUrl: string | undefined;
       if (wantsImageGeneration) {
@@ -1497,6 +1578,29 @@ export class ChatgptWebuiClient {
         const snapshotUrls = extractUrlsFromSnapshot(postSnapshot).map((url) => ({ url }));
         const visitedUrlLinks = visitedUrls.map((url) => ({ url }));
         imageUrls = extractImageUrlsFromLinks([...links, ...snapshotUrls, ...visitedUrlLinks]);
+
+        if (imageUrls.length === 0) {
+          const downloadRef = parseSnapshotForRef(postSnapshot, "button", /Download this image/i);
+          if (downloadRef) {
+            try {
+              await this.#camofoxClickRef(tabId, downloadRef);
+              await this.#camofoxTryWait(tabId, 4000, false);
+
+              const linksAfterClick = await this.#camofoxGetLinks(tabId);
+              const visitedAfterClick = await this.#camofoxGetVisitedUrls(tabId);
+              const snapshotAfterClick = await this.#camofoxSnapshotText(tabId);
+              const snapshotAfterUrls = extractUrlsFromSnapshot(snapshotAfterClick).map((url) => ({ url }));
+              const visitedAfterLinks = visitedAfterClick.map((url) => ({ url }));
+              imageUrls = extractImageUrlsFromLinks([
+                ...linksAfterClick,
+                ...snapshotAfterUrls,
+                ...visitedAfterLinks,
+              ]);
+            } catch {
+              // ignore image click fallback
+            }
+          }
+        }
 
         if (imageUrls.length === 0 && this.#imageScreenshotFallback) {
           try {
@@ -1511,8 +1615,8 @@ export class ChatgptWebuiClient {
       }
 
       return {
-        text: polled.text,
-        conversationId: polled.conversationId ?? input.conversationId ?? null,
+        text: wantsImageGeneration ? "" : polledText,
+        conversationId: polledConversationId ?? input.conversationId ?? null,
         parentMessageId: null,
         model: effectiveModelSlug ?? DEFAULT_MODEL,
         imageUrls,
@@ -1590,7 +1694,7 @@ export class ChatgptWebuiClient {
 
     const requestedModel = deepResearchRequested
       ? "research"
-      : input.model?.trim() || modeToDefaultModelSlug(input.modelMode) || undefined;
+      : input.model?.trim() || modeToDefaultModelSlug(input.modelMode) || modeToDefaultModelSlug("auto") || undefined;
 
     if (this.#transport === "camofox") {
       return await this.#askViaCamofox({
