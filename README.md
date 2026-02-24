@@ -17,12 +17,24 @@
 
 ## quick start
 
+install from npm:
+
+```bash
+npm i -g chatgpt-webui-mcp
+```
+
 manual run:
 
 ```bash
-CHATGPT_SESSION_TOKEN="your_token_here" npm install
-CHATGPT_SESSION_TOKEN="your_token_here" npm run build
-CHATGPT_SESSION_TOKEN="your_token_here" CHATGPT_TRANSPORT=camofox node dist/index.js
+CHATGPT_SESSION_TOKEN="your_token_here" chatgpt-webui-mcp
+```
+
+from source:
+
+```bash
+npm install
+npm run build
+CHATGPT_SESSION_TOKEN="your_token_here" node dist/index.js
 ```
 
 > important: this uses chatgpt's internal webui api with a session cookie. for personal/local tinkering only - not affiliated with openai.
@@ -31,12 +43,9 @@ CHATGPT_SESSION_TOKEN="your_token_here" CHATGPT_TRANSPORT=camofox node dist/inde
 
 ### overview
 
-chatgpt-webui-mcp is a standalone MCP server that can drive chatgpt.com through either:
+chatgpt-webui-mcp is a standalone MCP server that drives chatgpt.com via `camofox` (UI automation).
 
-- `camofox` (default, recommended): UI-driven flow through a running `camofox-browser` server
-- `httpcloak` (fallback): direct WebUI backend calls (faster, but less robust)
-
-it supports long-running tasks (gpt-5.2 pro runs that take 1h+), deep research, and image generation mode.
+it is built for long-running tasks (gpt-5.2 pro runs that take 1h+), deep research, and image generation mode.
 
 ---
 
@@ -55,23 +64,25 @@ because this server uses `stdio` or `sse`, you configure it as a local command (
 
 **mcp client config (claude desktop, opencode, etc)**
 
-```json
-{
-  "mcpServers": {
-    "chatgpt-webui": {
-      "command": "node",
-      "args": ["/absolute/path/to/chatgpt-webui-mcp/dist/index.js"],
-      "timeout": 5400000,
-      "env": {
-        "CHATGPT_SESSION_TOKEN": "your_session_token_here",
-        "CHATGPT_TRANSPORT": "camofox",
-        "CHATGPT_CAMOFOX_BASE_URL": "http://127.0.0.1:9377",
-        "CHATGPT_CAMOFOX_WAIT_TIMEOUT_MS": "5400000"
+ ```json
+ {
+   "mcpServers": {
+     "chatgpt-webui": {
+       "command": "node",
+       "args": ["/absolute/path/to/chatgpt-webui-mcp/dist/index.js"],
+        "timeout": 7200000,
+         "env": {
+           "CHATGPT_SESSION_TOKEN_FILE": "/path/to/session-token.txt",
+           "CHATGPT_BROWSER_BASE_URL": "http://127.0.0.1:9377",
+           "CHATGPT_WAIT_TIMEOUT_MS": "7200000"
+         }
       }
     }
   }
-}
-```
+  ```
+
+legacy `CHATGPT_CAMOFOX_*` env vars are still supported for compatibility.
+`CHATGPT_TRANSPORT=httpcloak` is optional fallback mode for advanced/debug scenarios.
 
 ---
 
@@ -120,8 +131,27 @@ why: deep research and gpt-5.2 pro can take a long time and may exceed a single 
 set `create_image=true` to switch chatgpt into image generation mode before sending the prompt.
 
 notes:
-- `image_urls` is best-effort and may be empty depending on how chatgpt renders images in the webui.
+- `image_urls` is best-effort (derived from page links + visited urls) and may be empty depending on how chatgpt renders images in the webui.
+- fallback screenshot output is returned in `image_data_url` (not `image_urls`) when enabled and size-capped.
+- enable fallback with `CHATGPT_IMAGE_SCREENSHOT_FALLBACK=1`.
+- cap fallback size with `CHATGPT_IMAGE_SCREENSHOT_MAX_BYTES` (default `2097152`, 2 MiB).
 - for reliable retrieval, you can also use the conversation_id and open the chatgpt UI.
+
+---
+
+### self-test
+
+```bash
+# env
+CHATGPT_SESSION_TOKEN="your_token_here" npm run self-test
+
+# cli flag
+npm run self-test -- --token "your_token_here"
+
+# file
+echo "your_token_here" > ~/.config/chatgpt-webui-mcp/session-token.txt
+npm run self-test -- --token-file ~/.config/chatgpt-webui-mcp/session-token.txt
+```
 
 ---
 
@@ -156,7 +186,7 @@ systemctl --user enable --now chatgpt-webui-mcp.service
       "type": "remote",
       "url": "http://<tailscale-ip>:8791/sse",
       "enabled": true,
-      "timeout": 5400000,
+      "timeout": 7200000,
       "oauth": false
     }
   }
@@ -189,7 +219,7 @@ chatgpt-webui-mcp/
 │       └── chatgpt-webui-mcp.service
 ├── src/
 │   ├── index.ts               # MCP server
-│   └── chatgpt-webui-client.ts # WebUI transport logic
+│   └── chatgpt-webui-client.ts # WebUI automation client
 ├── package.json
 ├── tsconfig.json
 ├── .env.example

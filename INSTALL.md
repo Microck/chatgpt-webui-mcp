@@ -2,11 +2,25 @@
 
 this is a minimal standalone MCP server for ChatGPT WebUI.
 
-it supports:
-- `camofox` transport (default, UI-driven) for robust long-running tasks (pro, deep research)
-- `httpcloak` transport (fallback) for direct WebUI backend calls
+it uses `camofox` (UI-driven) by default for robust long-running tasks (pro, deep research).
 
 > important: this uses undocumented webui endpoints and a session cookie token. for personal/local tinkering only - not affiliated with openai.
+
+---
+
+## quick start (npm)
+
+install from npm:
+
+```bash
+npm i -g chatgpt-webui-mcp
+```
+
+then run:
+
+```bash
+CHATGPT_SESSION_TOKEN="your_session_token_here" chatgpt-webui-mcp
+```
 
 ---
 
@@ -28,7 +42,7 @@ export CHATGPT_SESSION_TOKEN="your_session_token_here"
 run (stdio):
 
 ```bash
-CHATGPT_TRANSPORT=camofox node dist/index.js
+node dist/index.js
 ```
 
 ---
@@ -43,21 +57,22 @@ add this to your OpenCode config (`~/.config/opencode/opencode.json`) under `mcp
     "chatgpt-webui": {
       "type": "local",
       "enabled": true,
-      "timeout": 5400000,
+      "timeout": 7200000,
       "command": [
         "node",
         "/absolute/path/to/chatgpt-webui-mcp/dist/index.js"
       ],
       "environment": {
-        "CHATGPT_SESSION_TOKEN": "your_session_token_here",
-        "CHATGPT_TRANSPORT": "camofox",
-        "CHATGPT_CAMOFOX_BASE_URL": "http://127.0.0.1:9377",
-        "CHATGPT_CAMOFOX_WAIT_TIMEOUT_MS": "5400000"
+        "CHATGPT_SESSION_TOKEN_FILE": "/path/to/session-token.txt",
+        "CHATGPT_BROWSER_BASE_URL": "http://127.0.0.1:9377",
+        "CHATGPT_WAIT_TIMEOUT_MS": "7200000"
       }
     }
   }
 }
 ```
+
+`camofox` is the default path. set `CHATGPT_TRANSPORT=httpcloak` only for optional advanced fallback mode.
 
 ---
 

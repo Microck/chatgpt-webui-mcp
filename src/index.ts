@@ -137,6 +137,7 @@ function formatAskResult(result: Awaited<ReturnType<ChatgptWebuiClient["ask"]>>)
     parent_message_id: result.parentMessageId,
     model: result.model,
     image_urls: result.imageUrls ?? [],
+    image_data_url: result.imageDataUrl,
   };
 }
 

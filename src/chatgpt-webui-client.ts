@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import {
   Session,
@@ -33,6 +34,7 @@ export type AskOutput = {
   parentMessageId: string | null;
   model: string | null;
   imageUrls?: string[];
+  imageDataUrl?: string;
 };
 
 type SessionPayload = {
@@ -70,8 +72,23 @@ const DEFAULT_TRANSPORT = "camofox";
 const DEFAULT_CAMOFOX_BASE_URL = "http://127.0.0.1:9377";
 const DEFAULT_CAMOFOX_USER_ID = "chatgpt-webui-mcp";
 const DEFAULT_CAMOFOX_SESSION_KEY = "chatgpt-webui";
-const DEFAULT_CAMOFOX_WAIT_TIMEOUT_MS = 5400000;
+const DEFAULT_CAMOFOX_WAIT_TIMEOUT_MS = 7200000;
 const DEFAULT_CAMOFOX_WORKSPACE = "PRO";
+const DEFAULT_IMAGE_SCREENSHOT_FALLBACK = false;
+const DEFAULT_IMAGE_SCREENSHOT_MAX_BYTES = 2 * 1024 * 1024;
+
+function readTokenFromFile(filePath: string): string {
+  const path = filePath.trim();
+  if (!path) {
+    return "";
+  }
+
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
 
 function normalizeBaseUrl(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "");
@@ -410,6 +427,10 @@ type CamofoxLinksResponse = {
   }>;
 };
 
+type CamofoxStatsResponse = {
+  visitedUrls?: unknown;
+};
+
 type CamofoxMenuItem = {
   ref: string;
   label: string;
@@ -484,7 +505,8 @@ function extractImageUrlsFromLinks(links: Array<{ url?: string; text?: string }>
 
     const isLikelyImageUrl =
       /\.(png|jpe?g|webp|gif)(?:[?#]|$)/i.test(url) ||
-      /(oaiusercontent|openaiusercontent|oaidalle|blob\.core\.windows\.net)/i.test(url);
+      /(oaiusercontent|openaiusercontent|oaidalle|blob\.core\.windows\.net)/i.test(url) ||
+      /\/backend-api\/(files|asset)\//i.test(url);
 
     if (!isLikelyImageUrl) {
       continue;
@@ -495,6 +517,18 @@ function extractImageUrlsFromLinks(links: Array<{ url?: string; text?: string }>
   }
 
   return output;
+}
+
+function extractVisitedUrlsFromStats(stats: CamofoxStatsResponse): string[] {
+  const raw = (stats as { visitedUrls?: unknown }).visitedUrls;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function extractUrlsFromSnapshot(snapshot: string): string[] {
@@ -661,36 +695,53 @@ export class ChatgptWebuiClient {
   readonly #camofoxApiKey: string;
   readonly #camofoxWaitTimeoutMs: number;
   readonly #camofoxWorkspace: string;
+  readonly #imageScreenshotFallback: boolean;
+  readonly #imageScreenshotMaxBytes: number;
 
   constructor(options: ChatgptWebuiClientOptions = {}) {
     this.#baseUrl = normalizeBaseUrl(options.baseUrl ?? process.env.CHATGPT_WEBUI_BASE_URL ?? DEFAULT_BASE_URL);
-    this.#sessionToken = String(
+
+    const tokenFromEnv = String(
       options.sessionToken ?? process.env.CHATGPT_SESSION_TOKEN ?? process.env.OPENAI_SESSION_TOKEN ?? "",
     ).trim();
+    const tokenFilePath = String(process.env.CHATGPT_SESSION_TOKEN_FILE ?? "").trim();
+    const tokenFromFile = tokenFromEnv ? "" : readTokenFromFile(tokenFilePath);
+    const sessionToken = tokenFromEnv || tokenFromFile;
+
+    this.#sessionToken = sessionToken;
     this.#deviceId = crypto.randomUUID();
     this.#transport = normalizeTransport(options.transport ?? process.env.CHATGPT_TRANSPORT);
     this.#camofoxBaseUrl = normalizeBaseUrl(
-      process.env.CHATGPT_CAMOFOX_BASE_URL ?? process.env.CAMOFOX_BASE_URL ?? DEFAULT_CAMOFOX_BASE_URL,
+      process.env.CHATGPT_BROWSER_BASE_URL ??
+        process.env.CHATGPT_CAMOFOX_BASE_URL ??
+        process.env.CAMOFOX_BASE_URL ??
+        DEFAULT_CAMOFOX_BASE_URL,
     );
     this.#camofoxUserId = String(
-      process.env.CHATGPT_CAMOFOX_USER_ID ?? DEFAULT_CAMOFOX_USER_ID,
+      process.env.CHATGPT_USER_ID ?? process.env.CHATGPT_CAMOFOX_USER_ID ?? DEFAULT_CAMOFOX_USER_ID,
     ).trim();
     this.#camofoxSessionKey = String(
-      process.env.CHATGPT_CAMOFOX_SESSION_KEY ?? DEFAULT_CAMOFOX_SESSION_KEY,
+      process.env.CHATGPT_SESSION_KEY ?? process.env.CHATGPT_CAMOFOX_SESSION_KEY ?? DEFAULT_CAMOFOX_SESSION_KEY,
     ).trim();
     this.#camofoxApiKey = String(
       process.env.CHATGPT_CAMOFOX_API_KEY ?? process.env.CAMOFOX_API_KEY ?? "",
     ).trim();
-    const waitTimeoutFromEnv = parsePositiveNumber(process.env.CHATGPT_CAMOFOX_WAIT_TIMEOUT_MS);
+    const waitTimeoutFromEnv = parsePositiveNumber(
+      process.env.CHATGPT_WAIT_TIMEOUT_MS ?? process.env.CHATGPT_CAMOFOX_WAIT_TIMEOUT_MS,
+    );
     this.#camofoxWaitTimeoutMs =
       waitTimeoutFromEnv !== undefined ? Math.floor(waitTimeoutFromEnv) : DEFAULT_CAMOFOX_WAIT_TIMEOUT_MS;
     this.#camofoxWorkspace = String(
-      process.env.CHATGPT_CAMOFOX_WORKSPACE ?? DEFAULT_CAMOFOX_WORKSPACE,
+      process.env.CHATGPT_WORKSPACE ?? process.env.CHATGPT_CAMOFOX_WORKSPACE ?? DEFAULT_CAMOFOX_WORKSPACE,
     ).trim();
+    this.#imageScreenshotFallback =
+      parseOptionalBoolean(process.env.CHATGPT_IMAGE_SCREENSHOT_FALLBACK) ?? DEFAULT_IMAGE_SCREENSHOT_FALLBACK;
+    this.#imageScreenshotMaxBytes =
+      parseNonNegativeInteger(process.env.CHATGPT_IMAGE_SCREENSHOT_MAX_BYTES) ?? DEFAULT_IMAGE_SCREENSHOT_MAX_BYTES;
 
     if (!this.#sessionToken) {
       throw new Error(
-        "CHATGPT_SESSION_TOKEN is required (cookie value of __Secure-next-auth.session-token)",
+        "CHATGPT_SESSION_TOKEN is required (cookie value of __Secure-next-auth.session-token) or set CHATGPT_SESSION_TOKEN_FILE",
       );
     }
 
@@ -766,6 +817,21 @@ export class ChatgptWebuiClient {
     }
 
     return payload;
+  }
+
+  async #camofoxRequestBinary(path: string): Promise<{ mimeType: string; base64: string; bytes: number }> {
+    const response = await fetch(`${this.#camofoxBaseUrl}${path}`);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (!response.ok) {
+      const raw = buffer.toString("utf8");
+      throw new Error(`camofox_request_failed_${response.status}: ${summarizeErrorPayload(raw)}`);
+    }
+
+    return {
+      mimeType: response.headers.get("content-type") ?? "image/png",
+      base64: buffer.toString("base64"),
+      bytes: buffer.byteLength,
+    };
   }
 
   async #camofoxPost<T>(path: string, body: Record<string, unknown>, headers: Record<string, string> = {}): Promise<T> {
@@ -901,6 +967,30 @@ export class ChatgptWebuiClient {
     );
 
     return Array.isArray(payload.links) ? payload.links : [];
+  }
+
+  async #camofoxGetVisitedUrls(tabId: string): Promise<string[]> {
+    const payload = await this.#camofoxRequest<CamofoxStatsResponse>(
+      `/tabs/${encodeURIComponent(tabId)}/stats?userId=${encodeURIComponent(this.#camofoxUserId)}`,
+      {
+        method: "GET",
+      },
+    );
+
+    return extractVisitedUrlsFromStats(payload);
+  }
+
+  async #camofoxScreenshotDataUrl(tabId: string, fullPage = false): Promise<{ dataUrl: string; bytes: number }> {
+    const payload = await this.#camofoxRequestBinary(
+      `/tabs/${encodeURIComponent(tabId)}/screenshot?userId=${encodeURIComponent(this.#camofoxUserId)}&fullPage=${String(
+        fullPage,
+      )}`,
+    );
+
+    return {
+      dataUrl: `data:${payload.mimeType};base64,${payload.base64}`,
+      bytes: payload.bytes,
+    };
   }
 
   async #camofoxClickRef(tabId: string, ref: string): Promise<void> {
@@ -1398,11 +1488,26 @@ export class ChatgptWebuiClient {
         allowEmptyResult: wantsImageGeneration,
       });
       let imageUrls: string[] | undefined;
+      let imageDataUrl: string | undefined;
       if (wantsImageGeneration) {
+        await this.#camofoxTryWait(tabId, 8000, false);
         const links = await this.#camofoxGetLinks(tabId);
+        const visitedUrls = await this.#camofoxGetVisitedUrls(tabId);
         const postSnapshot = await this.#camofoxSnapshotText(tabId);
         const snapshotUrls = extractUrlsFromSnapshot(postSnapshot).map((url) => ({ url }));
-        imageUrls = extractImageUrlsFromLinks([...links, ...snapshotUrls]);
+        const visitedUrlLinks = visitedUrls.map((url) => ({ url }));
+        imageUrls = extractImageUrlsFromLinks([...links, ...snapshotUrls, ...visitedUrlLinks]);
+
+        if (imageUrls.length === 0 && this.#imageScreenshotFallback) {
+          try {
+            const screenshot = await this.#camofoxScreenshotDataUrl(tabId, false);
+            if (screenshot.bytes <= this.#imageScreenshotMaxBytes) {
+              imageDataUrl = screenshot.dataUrl;
+            }
+          } catch {
+            // best-effort fallback
+          }
+        }
       }
 
       return {
@@ -1411,6 +1516,7 @@ export class ChatgptWebuiClient {
         parentMessageId: null,
         model: effectiveModelSlug ?? DEFAULT_MODEL,
         imageUrls,
+        imageDataUrl,
       };
     } finally {
       if (tabId) {

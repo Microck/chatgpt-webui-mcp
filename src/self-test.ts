@@ -1,10 +1,52 @@
 import { ChatgptWebuiClient } from "./chatgpt-webui-client.js";
 
-async function main(): Promise<void> {
-  const token = String(process.env.CHATGPT_SESSION_TOKEN ?? "").trim();
-  if (!token) {
-    throw new Error("CHATGPT_SESSION_TOKEN is required");
+import { readFile } from "node:fs/promises";
+
+function readFlagValue(flag: string): string | null {
+  const args = process.argv.slice(2);
+  const direct = args.find((entry) => entry.startsWith(`${flag}=`));
+  if (direct) {
+    return direct.slice(flag.length + 1).trim() || null;
   }
+
+  const idx = args.indexOf(flag);
+  if (idx >= 0) {
+    const value = String(args[idx + 1] ?? "").trim();
+    return value || null;
+  }
+
+  return null;
+}
+
+async function resolveSessionToken(): Promise<string> {
+  const cliToken = readFlagValue("--token");
+  if (cliToken) {
+    return cliToken;
+  }
+
+  const envToken = String(process.env.CHATGPT_SESSION_TOKEN ?? "").trim();
+  if (envToken) {
+    return envToken;
+  }
+
+  const envTokenFile = String(process.env.CHATGPT_SESSION_TOKEN_FILE ?? "").trim();
+  const tokenFile = readFlagValue("--token-file") ?? (envTokenFile || null);
+  if (tokenFile) {
+    const raw = await readFile(tokenFile, "utf8");
+    const fileToken = raw.trim();
+    if (fileToken) {
+      return fileToken;
+    }
+  }
+
+  throw new Error(
+    "CHATGPT_SESSION_TOKEN is required (env CHATGPT_SESSION_TOKEN, --token, or CHATGPT_SESSION_TOKEN_FILE/--token-file)",
+  );
+}
+
+async function main(): Promise<void> {
+  const token = await resolveSessionToken();
+  process.env.CHATGPT_SESSION_TOKEN = token;
 
   const client = new ChatgptWebuiClient();
 
