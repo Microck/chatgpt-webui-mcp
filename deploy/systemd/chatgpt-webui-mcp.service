@@ -1,0 +1,15 @@
+[Unit]
+Description=chatgpt-webui-mcp (SSE)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ENV_FILE=%h/.config/chatgpt-webui-mcp.env
+Environment=CHATGPT_WEBUI_MCP_DIST=%h/.local/share/chatgpt-webui-mcp/dist/index.js
+ExecStart=%h/.local/bin/chatgpt-webui-mcp-sse.sh
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
