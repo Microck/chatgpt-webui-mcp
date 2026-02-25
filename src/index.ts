@@ -12,7 +12,7 @@ import { ChatgptWebuiClient } from "./chatgpt-webui-client.js";
 
 const serverInfo = {
   name: "chatgpt-webui-mcp",
-  version: "0.2.0",
+  version: "0.1.6",
 } as const;
 
 const askInputSchema = {
@@ -138,6 +138,7 @@ function formatAskResult(result: Awaited<ReturnType<ChatgptWebuiClient["ask"]>>)
     model: result.model,
     image_urls: result.imageUrls ?? [],
     image_data_url: result.imageDataUrl,
+    images: result.images ?? [],
   };
 }
 

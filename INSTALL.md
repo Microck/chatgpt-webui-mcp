@@ -72,7 +72,7 @@ add this to your OpenCode config (`~/.config/opencode/opencode.json`) under `mcp
 }
 ```
 
-`camofox` is the default path. set `CHATGPT_TRANSPORT=httpcloak` only for optional advanced fallback mode.
+`camofox` is the default (and only supported) path.
 if model/thinking are omitted, requests default to `gpt-5-2` (auto), not pro.
 
 ---

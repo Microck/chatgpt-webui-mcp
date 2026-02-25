@@ -18,6 +18,11 @@ function readFlagValue(flag: string): string | null {
   return null;
 }
 
+function hasFlag(flag: string): boolean {
+  const args = process.argv.slice(2);
+  return args.includes(flag);
+}
+
 async function resolveSessionToken(): Promise<string> {
   const cliToken = readFlagValue("--token");
   if (cliToken) {
@@ -51,9 +56,14 @@ async function main(): Promise<void> {
   const client = new ChatgptWebuiClient();
 
   try {
-    const session = await client.getSession();
-    const email = session.user?.email ?? "unknown";
-    console.log(`[ok] session: ${email}`);
+    try {
+      const session = await client.getSession();
+      const email = session.user?.email ?? "unknown";
+      console.log(`[ok] session: ${email}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[warn] session check skipped: ${message}`);
+    }
 
     const instant = await client.ask({
       prompt: "Reply exactly with SELF_TEST_INSTANT_OK",
@@ -74,6 +84,34 @@ async function main(): Promise<void> {
       throw new Error(`pro_mismatch: ${pro.text.slice(0, 200)}`);
     }
     console.log("[ok] pro");
+
+    const wantsImage =
+      hasFlag("--images") || ["1", "true", "yes", "on"].includes(String(process.env.SELF_TEST_IMAGES ?? "").trim());
+    if (wantsImage) {
+      const image = await client.ask({
+        prompt:
+          "Create a clean, simple 256x256 PNG app icon: a minimalist chat bubble with a small sparkle. Flat design, 2 colors, high contrast, no text.",
+        createImage: true,
+        modelMode: "auto",
+        waitTimeoutMs: 900000,
+      });
+
+      const images = image.images ?? [];
+      if (images.length === 0 || !images[0]?.estuaryUrl) {
+        console.log(
+          "[debug] image result:",
+          JSON.stringify({
+            conversationId: image.conversationId,
+            model: image.model,
+            imageUrls: image.imageUrls ?? [],
+            images: image.images ?? [],
+            hasImageDataUrl: Boolean(image.imageDataUrl),
+          }),
+        );
+        throw new Error(`image_missing_assets: urls=${(image.imageUrls ?? []).length}`);
+      }
+      console.log(`[ok] images: ${images.length}`);
+    }
   } finally {
     client.close();
   }

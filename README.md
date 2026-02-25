@@ -1,20 +1,19 @@
+<p align="center">
+  <img src="./logo.png" alt="chatgpt-webui-mcp" width="100">
+</p>
 
+<h1 align="center">chatgpt-webui-mcp</h1>
 
-<h1 align="">chatgpt-webui-mcp</h1>
-
-<p align="">
+<p align="center">
   mcp server for querying chatgpt (chatgpt.com) via webui session token.
 </p>
 
-<p align="">
-  <img src="assets/icon.png" alt="chatgpt-webui-mcp icon" width="96" height="96">
-</p>
-
-<p align="">
+<p align="center">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/language-typescript-blue" alt="language">
+  <img src="https://img.shields.io/badge/npm-chatgpt--webui--mcp-orange" alt="npm">
   <img src="https://img.shields.io/badge/mcp-sdk-orange" alt="mcp">
-  <a href="https://github.com/Microck/opencode-studio"><img src="https://img.shields.io/badge/opencode-studio-brown" alt="Add with OpenCode Studio" /></a>
+  <a href="https://github.com/Microck/opencode-studio"><img src="https://img.shields.io/badge/opencode-studio-brown?logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAAA4AAAAOCAYAAAAfSC3RAAABiElEQVR4nF2Sv0tWcRTGPyeVIpCWwmyJGqQagsqCsL2hhobsD3BvdWhoj/6CiIKaoqXBdMjKRWwQgqZ%2BokSvkIhg9BOT9xPn9Vx79cD3cu6953zP8zznCQB1V0S01d3AKeAKcBVYA94DjyJioru2k9SHE%2Bqc%2Bkd9rL7yf7TUm%2BpQ05yPUM%2Bo626Pp%2BqE2q7GGfWrOpjNnWnAOPAGeAK8Bb4U5D3AJ%2BAQsAAMAHfVvl7gIrAf2Kjiz8BZYB3YC/wFpoGDwHfgEnA0oU7tgHiheEShyXxY/Vn/n6ljye8DcBiYAloRcV3tAdrV1xMRG%2Bo94DywCAwmx33AJHASWK7iiAjzNFOBl7WapPYtYdyo8RlLqVpOVPvq9KoH1NUuOneycaRefqnP1ftdUyiOt5KS%2BqLWdDpVzTXMl5It4Jr6u%2BQ/nhyBc8C7jpowGxGvmxuPqT9qyYuFIKdP71B8WT3SOKexXLrntvqxq3BefaiuFMQ0wqZftxl3M78MjBasfiDN/SAi0kFbtf8ACtKBWZBDoJEAAAAASUVORK5CYII%3D" alt="Add with OpenCode Studio" /></a>
 </p>
 
 ---
@@ -86,7 +85,7 @@ because this server uses `stdio` or `sse`, you configure it as a local command (
   ```
 
 legacy `CHATGPT_CAMOFOX_*` env vars are still supported for compatibility.
-`CHATGPT_TRANSPORT=httpcloak` is optional fallback mode for advanced/debug scenarios.
+`CHATGPT_TRANSPORT=httpcloak` is intentionally unsupported (use camofox).
 when model/thinking are omitted, requests default to `gpt-5-2` (auto), not pro.
 
 ---
