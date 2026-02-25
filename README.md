@@ -1,11 +1,9 @@
 <p align="center">
-  <img src="./logo.png" alt="chatgpt-webui-mcp" width="100">
+  <img src="./logo.png" alt="chatgpt-webui-mcp" width="200">
 </p>
 
-<h1 align="center">chatgpt-webui-mcp</h1>
-
 <p align="center">
-  mcp server for querying chatgpt (chatgpt.com) via webui session token.
+  mcp server for querying chatgpt (chatgpt.com) via webui session token (the image above was generated with this!)
 </p>
 
 <p align="center">
