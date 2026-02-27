@@ -23,7 +23,7 @@
     "typecheck": "tsc --noEmit",
     "self-test": "tsx src/self-test.ts",
     "lint:commit": "commitlint --edit",
-    "prepare": "husky install"
+    "prepare": "husky"
   },
   "keywords": [
     "mcp",
