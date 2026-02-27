@@ -1570,6 +1570,92 @@ export class ChatgptWebuiClient {
     return Array.isArray(payload.downloads) ? payload.downloads : [];
   }
 
+  #mapCamofoxDownloadsToImages(
+    downloads: NonNullable<CamofoxDownloadsResponse["downloads"]>,
+  ): NonNullable<AskOutput["images"]> {
+    return downloads
+      .filter((entry) => !entry?.failure)
+      .map((entry) => {
+        const downloadUrl = String(entry.url ?? "").trim();
+        const suggestedFilename = String(entry.suggestedFilename ?? "").trim();
+        const mimeType =
+          String(entry.mimeType ?? "").trim() ||
+          inferMimeTypeFromName(suggestedFilename) ||
+          inferMimeTypeFromName(downloadUrl) ||
+          "application/octet-stream";
+        const dataBase64 = String(entry.dataBase64 ?? "").trim();
+        const syntheticUrl = `download://${encodeURIComponent(String(entry.id ?? crypto.randomUUID()))}/${encodeURIComponent(
+          suggestedFilename || "image.bin",
+        )}`;
+        const estuaryUrl = downloadUrl || syntheticUrl;
+        const assetPointer =
+          extractAssetPointerLikeTokensFromUrls([estuaryUrl])[0] || suggestedFilename || estuaryUrl;
+
+        return {
+          assetPointer,
+          estuaryUrl,
+          mimeType,
+          bytes: typeof entry.bytes === "number" ? entry.bytes : undefined,
+          dataUrl: dataBase64 ? `data:${mimeType};base64,${dataBase64}` : undefined,
+        };
+      })
+      .filter((entry) => Boolean(entry.estuaryUrl));
+  }
+
+  async #camofoxWaitForDownloadedImages(
+    tabId: string,
+    options?: {
+      timeoutMs?: number;
+      intervalMs?: number;
+      consume?: boolean;
+    },
+  ): Promise<NonNullable<AskOutput["images"]>> {
+    const timeoutMs =
+      typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+        ? Math.floor(options.timeoutMs)
+        : 10000;
+    const intervalMs =
+      typeof options?.intervalMs === "number" && Number.isFinite(options.intervalMs) && options.intervalMs > 0
+        ? Math.floor(options.intervalMs)
+        : 500;
+    const shouldConsume = options?.consume === true;
+
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      let downloads: NonNullable<CamofoxDownloadsResponse["downloads"]> = [];
+      try {
+        downloads = await this.#camofoxGetDownloads(tabId, {
+          includeData: true,
+          consume: false,
+          maxBytes: this.#imageDownloadMaxBytes,
+        });
+      } catch {
+        downloads = [];
+      }
+
+      const mapped = this.#mapCamofoxDownloadsToImages(downloads);
+      if (mapped.length > 0) {
+        if (shouldConsume) {
+          try {
+            await this.#camofoxGetDownloads(tabId, {
+              includeData: false,
+              consume: true,
+              maxBytes: this.#imageDownloadMaxBytes,
+            });
+          } catch {
+            // best-effort drain
+          }
+        }
+
+        return mapped;
+      }
+
+      await sleep(intervalMs);
+    }
+
+    return [];
+  }
+
   async #camofoxGetDomImages(
     tabId: string,
     options?: { includeData?: boolean; maxBytes?: number; limit?: number },
@@ -2420,44 +2506,34 @@ export class ChatgptWebuiClient {
         }
 
         if (imageUrls.length === 0) {
-          const downloadRef = parseSnapshotForRef(postSnapshot, "button", /Download this image/i);
+          try {
+            const queuedDownloads = await this.#camofoxWaitForDownloadedImages(tabId, {
+              timeoutMs: 2500,
+              intervalMs: 350,
+              consume: true,
+            });
+            if (queuedDownloads.length > 0) {
+              images = queuedDownloads;
+              imageUrls = queuedDownloads.map((entry) => entry.estuaryUrl);
+              imageDataUrl = queuedDownloads.find((entry) => entry.dataUrl)?.dataUrl;
+            }
+          } catch {
+            // ignore queued download check failures
+          }
+        }
+
+        if (imageUrls.length === 0) {
+          const downloadRef = parseSnapshotForRef(postSnapshot, "button", /Download(?: this image)?/i);
           if (downloadRef) {
             try {
               await this.#camofoxClickRef(tabId, downloadRef);
-              await this.#camofoxTryWait(tabId, 4000, false);
+              await this.#camofoxTryWait(tabId, 2500, false);
 
-              const downloadsAfterClick = await this.#camofoxGetDownloads(tabId, {
-                includeData: true,
+              const imagesFromDownloads = await this.#camofoxWaitForDownloadedImages(tabId, {
+                timeoutMs: 12000,
+                intervalMs: 500,
                 consume: true,
-                maxBytes: this.#imageDownloadMaxBytes,
               });
-              const imagesFromDownloads = downloadsAfterClick
-                .filter((entry) => !entry?.failure)
-                .map((entry) => {
-                  const downloadUrl = String(entry.url ?? "").trim();
-                  const suggestedFilename = String(entry.suggestedFilename ?? "").trim();
-                  const mimeType =
-                    String(entry.mimeType ?? "").trim() ||
-                    inferMimeTypeFromName(suggestedFilename) ||
-                    inferMimeTypeFromName(downloadUrl) ||
-                    "application/octet-stream";
-                  const dataBase64 = String(entry.dataBase64 ?? "").trim();
-                  const syntheticUrl = `download://${encodeURIComponent(
-                    String(entry.id ?? crypto.randomUUID()),
-                  )}/${encodeURIComponent(suggestedFilename || "image.bin")}`;
-                  const estuaryUrl = downloadUrl || syntheticUrl;
-                  const assetPointer =
-                    extractAssetPointerLikeTokensFromUrls([estuaryUrl])[0] || suggestedFilename || estuaryUrl;
-
-                  return {
-                    assetPointer,
-                    estuaryUrl,
-                    mimeType,
-                    bytes: typeof entry.bytes === "number" ? entry.bytes : undefined,
-                    dataUrl: dataBase64 ? `data:${mimeType};base64,${dataBase64}` : undefined,
-                  };
-                })
-                .filter((entry) => entry.estuaryUrl);
 
               if (imagesFromDownloads.length > 0) {
                 images = imagesFromDownloads;
