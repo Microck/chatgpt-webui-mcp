@@ -496,7 +496,25 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
     if (/^heading\s+"ChatGPT said:"/i.test(line)) {
       insideUserBlock = false;
 
-      const chunkLines: string[] = [];
+      // Collect paragraphs.  Each paragraph may contain inline formatting
+      // children (strong, em, code, …) that appear as separate lines in
+      // the accessibility snapshot.  We join inline fragments with spaces
+      // within a paragraph, and join paragraphs with newlines.
+      const paragraphs: string[] = [];
+      let currentParagraphParts: string[] = [];
+
+      const flushParagraph = () => {
+        if (currentParagraphParts.length > 0) {
+          // Join inline fragments, then clean up spacing before trailing
+          // punctuation that was a separate accessibility node (e.g. ".")
+          const joined = currentParagraphParts
+            .join(" ")
+            .replace(/\s+([.,;:!?)\]}])/g, "$1");
+          paragraphs.push(joined);
+          currentParagraphParts = [];
+        }
+      };
+
       for (let j = i + 1; j < lines.length; j += 1) {
         const candidate = lines[j] ?? "";
         if (
@@ -507,19 +525,41 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
           break;
         }
 
-        if (/^(paragraph|text):\s*/i.test(candidate)) {
-          let value = candidate.replace(/^(paragraph|text):\s*/i, "").trim();
+        // New paragraph: flush the previous one
+        if (/^paragraph:/i.test(candidate)) {
+          flushParagraph();
+          const value = candidate.replace(/^paragraph:\s*/i, "").trim();
+          if (value) {
+            const unquoted =
+              value.startsWith('"') && value.endsWith('"')
+                ? value.slice(1, -1)
+                : value;
+            if (unquoted && !/^Ask anything$/i.test(unquoted)) {
+              currentParagraphParts.push(unquoted);
+            }
+          }
+          continue;
+        }
+
+        // Inline text or formatting element — append to current paragraph
+        const inlineMatch = candidate.match(
+          /^(text|strong|emphasis|em|code|mark|del|ins|sub|sup|abbr|time|span|link):\s*/i,
+        );
+        if (inlineMatch) {
+          let value = candidate.slice(inlineMatch[0].length).trim();
           if (value.startsWith('"') && value.endsWith('"')) {
             value = value.slice(1, -1);
           }
           if (value && !/^Ask anything$/i.test(value)) {
-            chunkLines.push(value);
+            currentParagraphParts.push(value);
           }
         }
       }
 
-      if (chunkLines.length > 0) {
-        assistantChunks.push(chunkLines.join("\n"));
+      flushParagraph();
+
+      if (paragraphs.length > 0) {
+        assistantChunks.push(paragraphs.join("\n"));
       }
     }
   }
@@ -583,14 +623,15 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
       continue;
     }
 
-    if (!/^paragraph:\s*/i.test(line) && !/^text:\s*/i.test(line)) {
+    // Match paragraph, text, AND inline formatting elements
+    const fallbackInlineMatch = line.match(
+      /^(paragraph|text|strong|emphasis|em|code|mark|del|ins|sub|sup|abbr|time|span|link):\s*/i,
+    );
+    if (!fallbackInlineMatch) {
       continue;
     }
 
-    let value = line;
-
-    value = value.replace(/^text:\s*/i, "");
-    value = value.replace(/^paragraph:\s*/i, "");
+    let value = line.slice(fallbackInlineMatch[0].length).trim();
 
     if (value.startsWith("\"") && value.endsWith("\"")) {
       value = value.slice(1, -1);
