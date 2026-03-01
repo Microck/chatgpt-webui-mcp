@@ -1366,6 +1366,7 @@ export class ChatgptWebuiClient {
 
   async #camofoxImportSessionCookie(): Promise<void> {
     const expiry = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 30;
+    const expiryPast = 1;
     const headers: Record<string, string> = {};
     if (this.#camofoxApiKey) {
       headers.Authorization = `Bearer ${this.#camofoxApiKey}`;
@@ -1378,8 +1379,41 @@ export class ChatgptWebuiClient {
           cookies: [
             {
               name: "__Secure-next-auth.session-token",
+              // Clear any stale cookie variants first.
+              // Camofox/Playwright can hold both host-only and domain cookies. If both exist,
+              // ChatGPT may receive multiple cookies with the same name and treat the session as invalid.
+              value: "",
+              domain: ".chatgpt.com",
+              path: "/",
+              expires: expiryPast,
+              httpOnly: true,
+              secure: true,
+              sameSite: "None",
+            },
+            {
+              name: "__Secure-next-auth.session-token",
+              value: "",
+              domain: "chatgpt.com",
+              path: "/",
+              expires: expiryPast,
+              httpOnly: true,
+              secure: true,
+              sameSite: "None",
+            },
+            {
+              name: "__Secure-next-auth.session-token",
               value: this.#sessionToken,
               domain: ".chatgpt.com",
+              path: "/",
+              expires: expiry,
+              httpOnly: true,
+              secure: true,
+              sameSite: "None",
+            },
+            {
+              name: "__Secure-next-auth.session-token",
+              value: this.#sessionToken,
+              domain: "chatgpt.com",
               path: "/",
               expires: expiry,
               httpOnly: true,
