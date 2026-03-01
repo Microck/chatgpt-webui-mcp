@@ -433,6 +433,46 @@ function parseSnapshotForRef(snapshot: string, role: string, label: RegExp): str
   return null;
 }
 
+/**
+ * Normalize whitespace for fuzzy prompt comparison: collapse runs of
+ * whitespace to a single space and trim.
+ */
+function collapseWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Returns true when `candidate` looks like the user's prompt text (or a
+ * substantial substring of it).  Uses normalized whitespace comparison and
+ * also checks for substring containment in both directions so that minor
+ * formatting differences in the accessibility snapshot don't defeat the
+ * filter.
+ */
+function looksLikePromptText(candidate: string, promptNormalized: string): boolean {
+  if (!promptNormalized) {
+    return false;
+  }
+  const cn = collapseWhitespace(candidate);
+  const pn = collapseWhitespace(promptNormalized);
+  if (!cn || !pn) {
+    return false;
+  }
+  // Exact match after whitespace normalization
+  if (cn === pn) {
+    return true;
+  }
+  // Candidate is a significant substring of the prompt (≥60% of prompt length)
+  if (pn.length >= 20 && cn.length >= pn.length * 0.6 && pn.includes(cn)) {
+    return true;
+  }
+  // Prompt is a significant substring of the candidate (user prompt rendered
+  // with minor additions like trailing punctuation)
+  if (pn.length >= 20 && pn.length >= cn.length * 0.6 && cn.includes(pn)) {
+    return true;
+  }
+  return false;
+}
+
 function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string): string {
   const rawLines = snapshot.split(/\r?\n/);
   const lines = rawLines
@@ -440,43 +480,58 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
     .filter(Boolean)
     .map((line) => line.replace(/^[-]\s+/, ""));
 
+  // --- Primary path: look for "ChatGPT said:" heading sections ---
   const assistantChunks: string[] = [];
+  let insideUserBlock = false;
+
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i] ?? "";
-    if (!/^heading\s+"ChatGPT said:"/i.test(line)) {
+
+    // Track "You said:" blocks so we can skip them
+    if (/^heading\s+"You said:"/i.test(line)) {
+      insideUserBlock = true;
       continue;
     }
 
-    const chunkLines: string[] = [];
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const candidate = lines[j] ?? "";
-      if (
-        /^heading\s+"/i.test(candidate) ||
-        /^button\s+"/i.test(candidate) ||
-        /^(article|complementary|dialog|main|banner):/i.test(candidate)
-      ) {
-        break;
+    if (/^heading\s+"ChatGPT said:"/i.test(line)) {
+      insideUserBlock = false;
+
+      const chunkLines: string[] = [];
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const candidate = lines[j] ?? "";
+        if (
+          /^heading\s+"/i.test(candidate) ||
+          /^button\s+"/i.test(candidate) ||
+          /^(article|complementary|dialog|main|banner):/i.test(candidate)
+        ) {
+          break;
+        }
+
+        if (/^(paragraph|text):\s*/i.test(candidate)) {
+          let value = candidate.replace(/^(paragraph|text):\s*/i, "").trim();
+          if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.slice(1, -1);
+          }
+          if (value && !/^Ask anything$/i.test(value)) {
+            chunkLines.push(value);
+          }
+        }
       }
 
-      if (/^(paragraph|text):\s*/i.test(candidate)) {
-        let value = candidate.replace(/^(paragraph|text):\s*/i, "").trim();
-        if (value.startsWith('"') && value.endsWith('"')) {
-          value = value.slice(1, -1);
-        }
-        if (value && !/^Ask anything$/i.test(value)) {
-          chunkLines.push(value);
-        }
+      if (chunkLines.length > 0) {
+        assistantChunks.push(chunkLines.join("\n"));
       }
-    }
-
-    if (chunkLines.length > 0) {
-      assistantChunks.push(chunkLines.join("\n"));
     }
   }
 
   if (assistantChunks.length > 0) {
     return assistantChunks[assistantChunks.length - 1] ?? "";
   }
+
+  // --- Fallback path: no "ChatGPT said:" heading found ---
+  // This can happen during generation or if ChatGPT changes the heading text.
+  // We collect paragraph/text lines, but aggressively filter out the user's
+  // prompt and UI noise.
 
   const promptNormalized = prompt.trim();
   const noisePatterns = [
@@ -500,9 +555,34 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
     /^ChatGPT can make mistakes\./i,
   ];
 
-  const extracted: string[] = [];
+  // We also track "You said:" vs "ChatGPT said:" boundaries in the fallback
+  // path.  Lines appearing inside a "You said:" section are excluded even
+  // when there is no matching "ChatGPT said:" heading (e.g. mid-generation).
+  let fallbackInsideUserBlock = false;
+  const extractedBeforePrompt: string[] = [];
+  const extractedAfterPrompt: string[] = [];
+  let seenPromptText = false;
 
   for (const line of lines) {
+    // Track user/assistant heading boundaries even in fallback
+    if (/^heading\s+"You said:"/i.test(line)) {
+      fallbackInsideUserBlock = true;
+      continue;
+    }
+    if (/^heading\s+"ChatGPT said:"/i.test(line)) {
+      fallbackInsideUserBlock = false;
+      continue;
+    }
+    // Any other heading ends a user block (e.g. navigation headings)
+    if (/^heading\s+"/i.test(line)) {
+      fallbackInsideUserBlock = false;
+    }
+
+    // Skip content inside user blocks
+    if (fallbackInsideUserBlock) {
+      continue;
+    }
+
     if (!/^paragraph:\s*/i.test(line) && !/^text:\s*/i.test(line)) {
       continue;
     }
@@ -521,7 +601,9 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
       continue;
     }
 
-    if (promptNormalized && normalized === promptNormalized) {
+    // Fuzzy prompt filtering (replaces the old exact-match check)
+    if (looksLikePromptText(normalized, promptNormalized)) {
+      seenPromptText = true;
       continue;
     }
 
@@ -529,15 +611,28 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
       continue;
     }
 
-    extracted.push(normalized);
+    if (seenPromptText) {
+      extractedAfterPrompt.push(normalized);
+    } else {
+      extractedBeforePrompt.push(normalized);
+    }
   }
 
-  if (extracted.length === 0) {
+  // Prefer text that appeared AFTER the prompt (more likely to be the
+  // assistant response).  Fall back to pre-prompt text only if there is
+  // nothing after.
+  const preferred = extractedAfterPrompt.length > 0
+    ? extractedAfterPrompt
+    : extractedBeforePrompt;
+
+  if (preferred.length === 0) {
     return "";
   }
 
-  extracted.sort((a, b) => b.length - a.length);
-  return extracted[0] ?? "";
+  // Return the last substantial block rather than the longest (the longest
+  // heuristic was prone to returning the prompt itself when it was the
+  // longest text on the page).
+  return preferred[preferred.length - 1] ?? "";
 }
 
 type CamofoxSnapshotResponse = {
