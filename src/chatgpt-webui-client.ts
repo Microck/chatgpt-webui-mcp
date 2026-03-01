@@ -496,36 +496,63 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
     if (/^heading\s+"ChatGPT said:"/i.test(line)) {
       insideUserBlock = false;
 
-      // Collect paragraphs.  Each paragraph may contain inline formatting
-      // children (strong, em, code, …) that appear as separate lines in
-      // the accessibility snapshot.  We join inline fragments with spaces
-      // within a paragraph, and join paragraphs with newlines.
-      const paragraphs: string[] = [];
+      // Collect content blocks from the assistant response.  The response
+      // can contain paragraphs with inline formatting, sub-headings, lists,
+      // blockquotes, code blocks, and separators.  We join inline fragments
+      // with spaces within a paragraph and join blocks with newlines.
+      const blocks: string[] = [];
       let currentParagraphParts: string[] = [];
 
       const flushParagraph = () => {
         if (currentParagraphParts.length > 0) {
-          // Join inline fragments, then clean up spacing before trailing
-          // punctuation that was a separate accessibility node (e.g. ".")
           const joined = currentParagraphParts
             .join(" ")
             .replace(/\s+([.,;:!?)\]}])/g, "$1");
-          paragraphs.push(joined);
+          blocks.push(joined);
           currentParagraphParts = [];
         }
       };
 
       for (let j = i + 1; j < lines.length; j += 1) {
         const candidate = lines[j] ?? "";
-        if (
-          /^heading\s+"/i.test(candidate) ||
-          /^button\s+"/i.test(candidate) ||
-          /^(article|complementary|dialog|main|banner):/i.test(candidate)
-        ) {
+
+        // --- Stop conditions ---
+        // Stop at the next conversation turn or major UI boundary
+        if (/^heading\s+"You said:"/i.test(candidate)) {
+          break;
+        }
+        // Stop at article/main/banner boundaries (next message or page section)
+        if (/^(article|complementary|dialog|main|banner):/i.test(candidate)) {
+          break;
+        }
+        // Stop at action buttons that mark the end of a response
+        // (Copy, Good response, Bad response, Share, Switch model, More actions)
+        if (/^button\s+"(Copy|Good response|Bad response|Share|Switch model|More actions)"/i.test(candidate)) {
           break;
         }
 
-        // New paragraph: flush the previous one
+        // --- Skip conditions ---
+        // Skip the thinking model's "Thought for Xs" collapsed button
+        if (/^button\s+"Thought for\b/i.test(candidate)) {
+          continue;
+        }
+        // Skip other non-content buttons (e.g. "Sources", expand/collapse)
+        if (/^button\s+"/i.test(candidate)) {
+          continue;
+        }
+
+        // --- Sub-headings within the response (h2, h3, etc.) ---
+        const headingMatch = candidate.match(/^heading\s+"([^"]+)"/i);
+        if (headingMatch) {
+          flushParagraph();
+          const headingText = headingMatch[1]?.trim();
+          if (headingText) {
+            blocks.push(`\n## ${headingText}`);
+          }
+          continue;
+        }
+
+        // --- Paragraph start ---
         if (/^paragraph:/i.test(candidate)) {
           flushParagraph();
           const value = candidate.replace(/^paragraph:\s*/i, "").trim();
@@ -541,7 +568,41 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
           continue;
         }
 
-        // Inline text or formatting element — append to current paragraph
+        // --- Standalone code blocks ---
+        if (/^code:\s*/i.test(candidate)) {
+          flushParagraph();
+          let value = candidate.replace(/^code:\s*/i, "").trim();
+          if (value.startsWith('"') && value.endsWith('"')) {
+            value = value.slice(1, -1);
+          }
+          if (value) {
+            blocks.push("```\n" + value + "\n```");
+          }
+          continue;
+        }
+
+        // --- Blockquote start ---
+        if (/^blockquote:/i.test(candidate)) {
+          flushParagraph();
+          // Blockquote children (paragraphs, etc.) will be captured
+          // by subsequent iterations; we just flush here.
+          continue;
+        }
+
+        // --- List / listitem (structural, children captured below) ---
+        if (/^(list|listitem):/i.test(candidate)) {
+          flushParagraph();
+          continue;
+        }
+
+        // --- Separator ---
+        if (/^separator\b/i.test(candidate)) {
+          flushParagraph();
+          blocks.push("---");
+          continue;
+        }
+
+        // --- Inline text or formatting element ---
         const inlineMatch = candidate.match(
           /^(text|strong|emphasis|em|code|mark|del|ins|sub|sup|abbr|time|span|link):\s*/i,
         );
@@ -558,8 +619,8 @@ function extractLikelyAssistantTextFromSnapshot(snapshot: string, prompt: string
 
       flushParagraph();
 
-      if (paragraphs.length > 0) {
-        assistantChunks.push(paragraphs.join("\n"));
+      if (blocks.length > 0) {
+        assistantChunks.push(blocks.join("\n"));
       }
     }
   }
