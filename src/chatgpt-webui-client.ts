@@ -1,33 +1,57 @@
 import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 
+/** Configuration options for {@link ChatgptWebuiClient}. */
 export type ChatgptWebuiClientOptions = {
+  /** Base URL of the ChatGPT instance. Defaults to `https://chatgpt.com` or `CHATGPT_WEBUI_BASE_URL`. */
   baseUrl?: string;
+  /** Session token (the value of the `__Secure-next-auth.session-token` cookie). Falls back to `CHATGPT_SESSION_TOKEN` env var. */
   sessionToken?: string;
+  /** Transport mode. Only `"camofox"` is supported; `"httpcloak"` will throw. Defaults to `"camofox"`. */
   transport?: "camofox" | "httpcloak";
 };
 
+/** Input parameters for the {@link ChatgptWebuiClient.ask | ask} method. */
 export type AskInput = {
+  /** The text prompt to send to ChatGPT. Required. */
   prompt: string;
+  /** Model slug override (e.g., `gpt-5-2`, `gpt-5-1-instant`, `research`). Ignored when `deepResearch` is true. */
   model?: string;
+  /** Quick model mode selector mapping to GPT-5.2 variants. */
   modelMode?: "auto" | "instant" | "thinking" | "pro";
+  /** UI reasoning control for thinking-capable models. */
   reasoningEffort?: "none" | "standard" | "extended";
+  /** Enable Deep Research flow. Switches model to research mode. */
   deepResearch?: boolean;
+  /** Deep Research sites mode override. */
   deepResearchSiteMode?: "search_web" | "specific_sites";
+  /** Enable image-generation mode in the ChatGPT UI. */
   createImage?: boolean;
+  /** Maximum wait time for response completion in milliseconds. Supports long Pro runs. */
   waitTimeoutMs?: number;
+  /** Preferred workspace label if ChatGPT shows workspace selection (e.g., PRO, Personal). */
   workspace?: string;
+  /** Conversation ID to continue an existing chat. */
   conversationId?: string;
+  /** Parent message ID for continued conversation state. */
   parentMessageId?: string;
 };
 
+/** Output returned by the {@link ChatgptWebuiClient.ask | ask} method. */
 export type AskOutput = {
+  /** The assistant's text response. */
   text: string;
+  /** Conversation ID for continuing the chat (null if not available). */
   conversationId: string | null;
+  /** Parent message ID for conversation threading (null if not available). */
   parentMessageId: string | null;
+  /** The model slug used for the response (null if unknown). */
   model: string | null;
+  /** Image URLs extracted from the response (legacy field). */
   imageUrls?: string[];
+  /** Base64 data URL of the primary generated image. */
   imageDataUrl?: string;
+  /** Detailed image metadata including asset pointers and download URLs. */
   images?: Array<{
     assetPointer: string;
     estuaryUrl: string;
@@ -1099,6 +1123,20 @@ function extractAssistantText(event: ConversationEvent): string {
   return values.join("\n").trim();
 }
 
+/**
+ * Client for interacting with ChatGPT via the web UI using a session token.
+ *
+ * Uses the `camofox` browser automation transport to drive the ChatGPT web UI,
+ * extract responses from accessibility snapshots, and download generated images.
+ *
+ * @example
+ * ```typescript
+ * const client = new ChatgptWebuiClient();
+ * const result = await client.ask({ prompt: "Hello!" });
+ * console.log(result.text);
+ * client.close();
+ * ```
+ */
 export class ChatgptWebuiClient {
   readonly #baseUrl: string;
   readonly #sessionToken: string;
@@ -1169,6 +1207,7 @@ export class ChatgptWebuiClient {
     this.#accessTokenFetchedAt = 0;
   }
 
+  /** No-op. Kept for API compatibility. */
   close(): void {
     // no-op (kept for API compatibility)
   }
@@ -2865,6 +2904,7 @@ export class ChatgptWebuiClient {
     }
   }
 
+  /** Validate the session token and retrieve session details (access token, user info, expiry). */
   async getSession(): Promise<SessionPayload> {
     const doc = await this.#camofoxFetchJsonDocument(`${this.#baseUrl}/api/auth/session`);
     const payload = (doc as SessionPayload) ?? {};
@@ -2875,6 +2915,7 @@ export class ChatgptWebuiClient {
     return payload;
   }
 
+  /** List available ChatGPT models for the current account. Returns raw API response. */
   async getModels(): Promise<unknown> {
     return await this.#camofoxFetchJsonDocument(`${this.#baseUrl}/backend-api/models`);
   }
@@ -2898,6 +2939,16 @@ export class ChatgptWebuiClient {
     }
   }
 
+  /**
+   * Send a prompt to ChatGPT and wait for a response.
+   *
+   * Uses the `camofox` browser transport to drive the web UI, select the requested model,
+   * wait for the response (polling for completion), and extract the text/image output.
+   *
+   * @param input - Prompt and model configuration.
+   * @returns The assistant text response and metadata (conversation ID, model, images).
+   * @throws Error if `prompt` is empty, if `createImage` and `deepResearch` are both set, or on unrecoverable browser failure.
+   */
   async ask(input: AskInput): Promise<AskOutput> {
     const prompt = input.prompt.trim();
     if (!prompt) {
