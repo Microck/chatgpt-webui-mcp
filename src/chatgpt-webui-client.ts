@@ -71,26 +71,8 @@ type SessionPayload = {
   expires?: string;
 };
 
-type ConversationEvent = {
-  conversation_id?: string;
-  message?: {
-    id?: string;
-    author?: {
-      role?: string;
-    };
-    metadata?: {
-      model_slug?: string;
-    };
-    content?: {
-      parts?: unknown[];
-    };
-  };
-  error?: string;
-};
-
 const DEFAULT_BASE_URL = "https://chatgpt.com";
 const DEFAULT_MODEL = "auto";
-const CHAT_REQUIREMENTS_PATH = "/backend-api/sentinel/chat-requirements";
 const DEFAULT_TRANSPORT = "camofox";
 const DEFAULT_CAMOFOX_BASE_URL = "http://127.0.0.1:9377";
 const DEFAULT_CAMOFOX_USER_ID = "chatgpt-webui-mcp";
@@ -207,29 +189,6 @@ function parseFirstJsonDocumentFromSnapshot(snapshot: string): unknown | null {
   }
 
   return null;
-}
-
-function parseSseEvents(raw: string): ConversationEvent[] {
-  const events: ConversationEvent[] = [];
-  const lines = raw.split(/\r?\n/);
-
-  for (const line of lines) {
-    if (!line.startsWith("data:")) {
-      continue;
-    }
-
-    const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") {
-      continue;
-    }
-
-    const parsed = safeJsonParse<ConversationEvent>(payload);
-    if (parsed) {
-      events.push(parsed);
-    }
-  }
-
-  return events;
 }
 
 function parseOptionalBoolean(raw: string | undefined): boolean | undefined {
@@ -1100,29 +1059,6 @@ function parseConversationIdFromUrl(url: string | undefined): string | null {
   return match[1];
 }
 
-function extractAssistantText(event: ConversationEvent): string {
-  if (event.message?.author?.role !== "assistant") {
-    return "";
-  }
-
-  const parts = event.message?.content?.parts;
-  if (!Array.isArray(parts) || parts.length === 0) {
-    return "";
-  }
-
-  const values = parts
-    .map((part) => {
-      if (typeof part === "string") {
-        return part;
-      }
-
-      return "";
-    })
-    .filter(Boolean);
-
-  return values.join("\n").trim();
-}
-
 /**
  * Client for interacting with ChatGPT via the web UI using a session token.
  *
@@ -1220,17 +1156,6 @@ export class ChatgptWebuiClient {
     };
   }
 
-  #backendBaseHeaders(extra: Record<string, string> = {}): Record<string, string> {
-    return {
-      ...this.#headers(),
-      Origin: this.#baseUrl,
-      Referer: `${this.#baseUrl}/`,
-      "Oai-Device-Id": this.#deviceId,
-      Cookie: `__Secure-next-auth.session-token=${this.#sessionToken}`,
-      ...extra,
-    };
-  }
-
   #bearerBaseHeaders(extra: Record<string, string> = {}): Record<string, string> {
     // Prefer a pure bearer-auth path for backend API calls.
     // Sending the session cookie from Node can trip Cloudflare protections in some environments.
@@ -1240,64 +1165,6 @@ export class ChatgptWebuiClient {
       Referer: `${this.#baseUrl}/`,
       "Oai-Device-Id": this.#deviceId,
       ...extra,
-    };
-  }
-
-  async #backendFetch(url: string, init: RequestInit & { json?: unknown } = {}): Promise<BackendResponse> {
-    const headers = new Headers(init.headers);
-
-    // Ensure cookie + required headers always present.
-    for (const [key, value] of Object.entries(this.#backendBaseHeaders())) {
-      if (!headers.has(key)) {
-        headers.set(key, value);
-      }
-    }
-
-    let body = init.body;
-    if ("json" in init) {
-      body = JSON.stringify(init.json ?? {});
-      if (!headers.has("Content-Type")) {
-        headers.set("Content-Type", "application/json");
-      }
-    }
-
-    const response = await fetch(url, {
-      ...init,
-      headers,
-      body,
-    });
-
-    const text = await response.text();
-    return {
-      ok: response.ok,
-      statusCode: response.status,
-      text,
-      headers: response.headers,
-    };
-  }
-
-  async #backendFetchBinary(url: string, init: RequestInit = {}): Promise<BackendBinaryResponse> {
-    const headers = new Headers(init.headers);
-    for (const [key, value] of Object.entries(this.#backendBaseHeaders())) {
-      if (!headers.has(key)) {
-        headers.set(key, value);
-      }
-    }
-
-    const response = await fetch(url, {
-      ...init,
-      headers,
-    });
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-    const mimeType = response.headers.get("content-type") ?? "application/octet-stream";
-    return {
-      ok: response.ok,
-      statusCode: response.status,
-      bytes: buffer.byteLength,
-      mimeType,
-      base64: buffer.toString("base64"),
-      headers: response.headers,
     };
   }
 
@@ -1374,21 +1241,6 @@ export class ChatgptWebuiClient {
     this.#accessToken = String(payload.accessToken);
     this.#accessTokenFetchedAt = Date.now();
     return this.#accessToken;
-  }
-
-  async #getConversationPayload(conversationId: string): Promise<ConversationPayload> {
-    const accessToken = await this.#getAccessToken();
-    const response = await this.#bearerFetch(`${this.#baseUrl}/backend-api/conversation/${conversationId}`, {
-      headers: this.#bearerBaseHeaders({ Authorization: `Bearer ${accessToken}` }),
-    });
-
-    const raw = response.text;
-    const payload = safeJsonParse<ConversationPayload>(raw);
-    if (!response.ok || !payload) {
-      throw new Error(`conversation_fetch_failed_${response.statusCode}: ${summarizeErrorPayload(raw)}`);
-    }
-
-    return payload;
   }
 
   async #buildImagesFromPointers(pointers: string[]): Promise<NonNullable<AskOutput["images"]>> {
@@ -2918,25 +2770,6 @@ export class ChatgptWebuiClient {
   /** List available ChatGPT models for the current account. Returns raw API response. */
   async getModels(): Promise<unknown> {
     return await this.#camofoxFetchJsonDocument(`${this.#baseUrl}/backend-api/models`);
-  }
-
-  async #getChatRequirementsToken(accessToken: string): Promise<string | null> {
-    try {
-      const response = await this.#bearerFetch(`${this.#baseUrl}${CHAT_REQUIREMENTS_PATH}`, {
-        headers: this.#bearerBaseHeaders({ Authorization: `Bearer ${accessToken}` }),
-        json: {},
-      });
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const payload = safeJsonParse<{ token?: string }>(response.text) ?? {};
-
-      return payload.token ?? null;
-    } catch {
-      return null;
-    }
   }
 
   /**
